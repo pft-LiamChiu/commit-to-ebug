@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  git ebug [commit]
+
+Description:
+  Send the latest ebug commit (or a specified commit) to n8n webhook.
+  Only commits with message starting with:
+    [what] ebug:
+  will be sent.
+
+Arguments:
+  commit        Optional. Commit hash (short or full).
+                If omitted, use HEAD.
+
+Configuration:
+  Config file (next to this script):
+    .env.n8n
+
+  Required variables:
+    N8N_URL
+    N8N_SECRET
+    U_MESSENGER_EMAIL
+
+Examples:
+  git ebug
+  git ebug 3a1f9c2
+  git ebug HEAD~1
+
+Notes:
+  - Short commit hashes must be unique.
+  - Detached HEAD will be skipped.
+  - HTTPS is strongly recommended for N8N_URL.
+
+Commit Message Format:
+  The commit message must follow this format:
+    [what] ebug:xxx
+
+    [why]
+
+    [how]
+
+    @reviewer
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+# 嘗試載入 .env 檔案 (如果存在)
+if [ -f "$SCRIPT_DIR/.env.n8n" ]; then
+  source "$SCRIPT_DIR/.env.n8n"
+fi
+
+echo "[fill-ebug] 檢查必要設定…"
+
+# 檢查必要環境變數
+missing=()
+[[ -z "${N8N_URL:-}" ]] && missing+=("N8N_URL")
+[[ -z "${N8N_SECRET:-}" ]] && missing+=("N8N_SECRET")
+[[ -z "${U_MESSENGER_EMAIL:-}" ]] && missing+=("U_MESSENGER_EMAIL")
+
+if (( ${#missing[@]} > 0 )); then
+  echo "❌ 錯誤：缺少環境變數或 .env 設定："
+  for var in "${missing[@]}"; do echo "   - $var"; done
+  exit 1
+fi
+
+# 安全檢查：確保使用 HTTPS
+if [[ ! "$N8N_URL" =~ ^https:// ]]; then
+  echo "⚠️ 警告：N8N_URL 不是使用 HTTPS，傳輸過程可能不安全！"
+fi
+
+escape_string() {
+  echo -n "$1" \
+    | sed ':a;N;$!ba;s/\n/\\n/g' \
+    | sed 's/"/\\"/g'
+}
+
+notify_n8n_latest() {
+  local sha="$1"
+  local repo_url branch_name body escaped_msg
+  repo_url="$(git config --get remote.origin.url || true)"
+  branch_name="$(git symbolic-ref --quiet --short HEAD || true)"
+
+  if [[ -z "$branch_name" ]]; then
+    echo "[fill-ebug] ❌ detached HEAD，略過"
+    exit 0
+  fi
+
+  body="$(git log -1 --pretty=%B "$sha")"
+  if [[ ! "$body" =~ ^\[what\][[:space:]]+ebug: ]]; then
+  echo "[fill-ebug] ⏭ commit message 非 ebug 開頭，略過通知"
+  return 0
+  fi
+  escaped_msg="$(escape_string "$body")"
+
+  local author_name author_email author_date committer_name committer_email committer_date
+  author_name=$(git log -1 --pretty=%an "$sha")
+  author_email=$(git log -1 --pretty=%ae "$sha")
+  author_date=$(git log -1 --pretty=%aI "$sha")
+  committer_name=$(git log -1 --pretty=%cn "$sha")
+  committer_email=$(git log -1 --pretty=%ce "$sha")
+  committer_date=$(git log -1 --pretty=%cI "$sha")
+
+  local json_body
+  json_body=$(cat <<EOF
+{
+  "repo_url": "$repo_url",
+  "branch": "$branch_name",
+  "hash": "$sha",
+  "commit_message": "$escaped_msg",
+  "author_name": "$author_name",
+  "author_email": "$author_email",
+  "author_date": "$author_date",
+  "committer_name": "$committer_name",
+  "committer_email": "$committer_email",
+  "committer_date": "$committer_date",
+  "receiver_email": "$U_MESSENGER_EMAIL"
+}
+EOF
+)
+
+  echo "[fill-ebug] → Notify n8n: $sha"
+
+  response=$(curl -sS -X POST "$N8N_URL" \
+    -H "Content-Type: application/json" \
+    -H "N8N-Webhook-Secret: $N8N_SECRET" \
+    -d "$json_body" \
+    -w "\nHTTP_STATUS:%{http_code}" \
+    2>&1) || {
+      echo "[fill-ebug] ❌ curl 執行失敗"
+      echo "$response"
+      exit 1
+    }
+
+  http_status=$(echo "$response" | sed -n 's/.*HTTP_STATUS://p')
+  body_resp=$(echo "$response" | sed 's/HTTP_STATUS:.*//')
+
+  if [[ "${http_status:-0}" -ge 400 ]]; then
+    echo "[fill-ebug] ❌ n8n 回傳錯誤 (HTTP $http_status)"
+    echo "Response body:"
+    echo "$body_resp"
+    exit 1
+  fi
+}
+
+if [[ $# -ge 1 ]]; then
+  input_sha="$1"
+
+  if ! resolved_sha="$(git rev-parse --verify "${input_sha}^{commit}" 2>/dev/null)"; then
+    echo "[fill-ebug] ❌ commit hash 不存在或不唯一：$input_sha"
+    echo "[fill-ebug] 💡 請輸入更長的 commit hash"
+    exit 1
+  fi
+else
+  resolved_sha="$(git rev-parse HEAD)"
+fi
+
+notify_n8n_latest "$resolved_sha"
+
+exit 0
