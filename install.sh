@@ -66,4 +66,4 @@ say "👉 下一步：編輯設定檔"
 say "   ${ENV_TARGET}"
 say
 say "👉 測試："
-say "   git ${TOOL_NAME} --help"
+say "   git ${TOOL_NAME} -h"
