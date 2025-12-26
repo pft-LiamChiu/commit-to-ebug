@@ -66,6 +66,4 @@ say "👉 下一步：編輯設定檔"
 say "   ${ENV_TARGET}"
 say
 say "👉 測試："
-say "   git ${TOOL_NAME} --help  (如果你有做 --help)"
-say "   git ${TOOL_NAME}"
-say "   git ${TOOL_NAME} <commit-hash>"
+say "   git ${TOOL_NAME} --help"
