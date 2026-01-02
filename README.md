@@ -37,9 +37,10 @@ git ebug --help
 The installer creates a config file at `~/.local/bin/.env.n8n`. Edit it and add:
 
 ```bash
-N8N_URL="https://your-n8n-webhook-url"
-N8N_SECRET="your-webhook-secret"
-U_MESSENGER_EMAIL="receiver@example.com"
+N8N_URL="xxx"
+N8N_SECRET="xxx"
+HMAC_SECRET="xxx"
+U_MESSENGER_EMAIL="xxx"
 ```
 
 **Security:** Restrict file permissions to owner only:

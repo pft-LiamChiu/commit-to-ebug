@@ -66,6 +66,7 @@ missing=()
 [[ -z "${N8N_URL:-}" ]] && missing+=("N8N_URL")
 [[ -z "${N8N_SECRET:-}" ]] && missing+=("N8N_SECRET")
 [[ -z "${U_MESSENGER_EMAIL:-}" ]] && missing+=("U_MESSENGER_EMAIL")
+[[ -z "${HMAC_SECRET:-}" ]] && missing+=("HMAC_SECRET")
 
 if (( ${#missing[@]} > 0 )); then
   echo "❌ 錯誤：缺少環境變數或 .env 設定："
@@ -110,30 +111,48 @@ notify_n8n_latest() {
   committer_email=$(git log -1 --pretty=%ce "$sha")
   committer_date=$(git log -1 --pretty=%cI "$sha")
 
-  local json_body
-  json_body=$(cat <<EOF
+local json_body
+json_body=$(cat <<EOF
 {
-  "repo_url": "$repo_url",
-  "branch": "$branch_name",
-  "hash": "$sha",
-  "commit_message": "$escaped_msg",
-  "author_name": "$author_name",
-  "author_email": "$author_email",
-  "author_date": "$author_date",
-  "committer_name": "$committer_name",
-  "committer_email": "$committer_email",
-  "committer_date": "$committer_date",
-  "receiver_email": "$U_MESSENGER_EMAIL"
+"repo_url": "$repo_url",
+"branch": "$branch_name",
+"hash": "$sha",
+"commit_message": "$escaped_msg",
+"author_name": "$author_name",
+"author_email": "$author_email",
+"author_date": "$author_date",
+"committer_name": "$committer_name",
+"committer_email": "$committer_email",
+"committer_date": "$committer_date",
+"receiver_email": "$U_MESSENGER_EMAIL"
 }
 EOF
 )
 
   echo "[fill-ebug] → Notify n8n: $sha"
 
+  TIMESTAMP=$(date +%s)
+  NONCE=$(openssl rand -hex 16)
+
+  tmp_body="$(mktemp)"
+  printf "%s" "$json_body" > "$tmp_body"
+
+  tmp_hmac_data="$(mktemp)"
+  {
+    echo -n "$TIMESTAMP"
+    echo -n "$NONCE"
+    cat "$tmp_body"
+  } > "$tmp_hmac_data"
+
+  SIGNATURE="$(openssl dgst -sha256 -hmac "$HMAC_SECRET" "$tmp_hmac_data" | sed 's/^.* //')"
+
   response=$(curl -sS -X POST "$N8N_URL" \
     -H "Content-Type: application/json" \
+    -H "X-Timestamp: $TIMESTAMP" \
     -H "N8N-Webhook-Secret: $N8N_SECRET" \
-    -d "$json_body" \
+    -H "X-Nonce: $NONCE" \
+    -H "X-Signature: $SIGNATURE" \
+    --data-binary @"$tmp_body" \
     -w "\nHTTP_STATUS:%{http_code}" \
     2>&1) || {
       echo "[fill-ebug] ❌ curl 執行失敗"
